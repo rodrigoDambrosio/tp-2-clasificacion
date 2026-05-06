@@ -27,3 +27,6 @@ python classifier.py --model model.joblib --labels labels.json
 - Use --raw-hu if you do not want the log transform.
 - Use `--edges` to use Canny edges + dilation which can improve
 	contour detection when simple thresholding leaves gaps in the shape border.
+- If contours have small gaps or shapes are close together, increase
+	`--morph-size` (odd integer kernel) and `--dilate-iter` to close gaps
+	before contour extraction. Example: `--morph-size 9 --dilate-iter 2`.

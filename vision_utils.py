@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 
 
-def preprocess_frame(frame, invert=False, blur_ksize=5, method="otsu", close_ksize=5):
+def preprocess_frame(frame, invert=False, blur_ksize=5, method="otsu", close_ksize=5, dilate_iter=1):
     """Preprocess an input BGR frame and return (gray, thresh).
 
     method: 'otsu' (default) uses Otsu thresholding; 'adaptive' uses
@@ -30,7 +30,7 @@ def preprocess_frame(frame, invert=False, blur_ksize=5, method="otsu", close_ksi
         # Canny edges then dilate to close small gaps so contours are continuous
         edges = cv2.Canny(gray, 50, 150)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_ksize, close_ksize))
-        thresh = cv2.dilate(edges, kernel, iterations=1)
+        thresh = cv2.dilate(edges, kernel, iterations=dilate_iter)
         if invert:
             thresh = cv2.bitwise_not(thresh)
         return gray, thresh

@@ -18,6 +18,18 @@ def main():
         action="store_true",
         help="Use Canny edges + dilation for contour detection (more robust)",
     )
+    parser.add_argument(
+        "--morph-size",
+        type=int,
+        default=5,
+        help="Morphological kernel size used to close gaps (default 5)",
+    )
+    parser.add_argument(
+        "--dilate-iter",
+        type=int,
+        default=1,
+        help="Number of dilation iterations for Canny edges (default 1)",
+    )
     args = parser.parse_args()
 
     clf = load(args.model)
@@ -103,7 +115,9 @@ def main():
             h = max(1, min(h, h_frame - y))
             crop = frame[y : y + h, x : x + w]
             method = "canny" if args.edges else "otsu"
-            _, thresh_crop = preprocess_frame(crop, invert=args.invert, method=method)
+            _, thresh_crop = preprocess_frame(
+                crop, invert=args.invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
+            )
             contour = find_largest_contour(thresh_crop, min_area=args.min_area)
             # draw ROI on display
             cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
@@ -127,7 +141,9 @@ def main():
             cv2.imshow("thresh", thresh_crop)
         else:
             method = "canny" if args.edges else "otsu"
-            _, thresh = preprocess_frame(frame, invert=args.invert, method=method)
+            _, thresh = preprocess_frame(
+                frame, invert=args.invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
+            )
             contour = find_largest_contour(thresh, min_area=args.min_area)
             if contour is not None:
                 cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
