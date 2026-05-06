@@ -25,3 +25,5 @@ python classifier.py --model model.joblib --labels labels.json
 ## Notes
 - Use --invert if the background is darker than the shapes.
 - Use --raw-hu if you do not want the log transform.
+- Use `--edges` to use Canny edges + dilation which can improve
+	contour detection when simple thresholding leaves gaps in the shape border.
