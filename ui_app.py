@@ -1,5 +1,9 @@
+import io
 import os
+import sys
+import threading
 import tkinter as tk
+from contextlib import redirect_stderr, redirect_stdout
 from tkinter import filedialog, ttk
 
 import cv2
@@ -8,6 +12,7 @@ from joblib import load
 from PIL import Image, ImageTk
 
 from generator import append_row
+import trainer
 from pipeline import PipelineConfig, analyze_frame
 from vision_utils import load_label_map
 
@@ -16,6 +21,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Tetris Classifier UI")
+        self.root.option_add("*Font", ("Segoe UI", 10))
         self.process = None
         self.cap = None
         self.preview_running = False
@@ -98,7 +104,7 @@ class App:
         ttk.Style().theme_use("clam")
         style = ttk.Style()
         style.configure("TLabel", background="#242424", foreground="#e6e6e6")
-        style.configure("TButton", background="#3a3a3a", foreground="#ffffff", padding=(8, 4))
+        style.configure("TButton", background="#3a3a3a", foreground="#ffffff", padding=(10, 6))
         style.map(
             "TButton",
             background=[("active", "#4a4a4a"), ("pressed", "#2f2f2f")],
@@ -116,11 +122,11 @@ class App:
         tk.Label(mode_row, text="Mode", bg="#242424", fg="#cfcfcf").pack(anchor="w")
         ttk.Combobox(mode_row, textvariable=self.mode, values=["Generator", "Trainer", "Classifier"], state="readonly").pack(fill=tk.X, pady=4)
 
-        pred_row = tk.Frame(left, bg="#242424")
-        pred_row.pack(fill=tk.X, padx=12, pady=(2, 6))
-        tk.Label(pred_row, text="Prediction", bg="#242424", fg="#cfcfcf").pack(anchor="w")
+        self.pred_row = tk.Frame(left, bg="#242424")
+        self.pred_row.pack(fill=tk.X, padx=12, pady=(2, 6))
+        tk.Label(self.pred_row, text="Prediction", bg="#242424", fg="#cfcfcf").pack(anchor="w")
         tk.Label(
-            pred_row,
+            self.pred_row,
             textvariable=self.pred_var,
             bg="#242424",
             fg="#ffffff",
@@ -137,6 +143,10 @@ class App:
         self.cls_section = tk.Frame(left, bg="#242424")
         self.cls_section.pack(fill=tk.X, padx=12, pady=(4, 8))
         self._build_classifier_tab()
+
+        self.train_section = tk.Frame(left, bg="#242424")
+        self.train_section.pack(fill=tk.X, padx=12, pady=(4, 8))
+        self._build_trainer_tab()
 
         ttk.Separator(left).pack(fill=tk.X, padx=12, pady=8)
 
@@ -158,7 +168,7 @@ class App:
 
         right.add(preview_frame, stretch="always")
         right.add(log_frame, stretch="never", height=180)
-        self.log_msg("UI ready. Preview is always on.")
+        self.log_msg("UI ready.")
 
     def _build_generator_tab(self):
         frame = self.gen_section
@@ -172,6 +182,31 @@ class App:
         ttk.Button(row, text="Browse", command=self.browse_output).pack(side=tk.RIGHT, padx=4)
 
         ttk.Button(frame, text="Capture Hu (preview)", command=self.capture_hu).pack(fill=tk.X, pady=8)
+
+    def _build_trainer_tab(self):
+        frame = self.train_section
+        ttk.Label(frame, text="Dataset CSV").pack(anchor="w", pady=(6, 2))
+        row = tk.Frame(frame, bg="#242424")
+        row.pack(fill=tk.X)
+        ttk.Entry(row, textvariable=self.train_data).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row, text="Browse", command=self.browse_train_data).pack(side=tk.RIGHT, padx=4)
+
+        ttk.Label(frame, text="Model Output").pack(anchor="w", pady=(8, 2))
+        row = tk.Frame(frame, bg="#242424")
+        row.pack(fill=tk.X)
+        ttk.Entry(row, textvariable=self.train_model).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row, text="Browse", command=self.browse_train_model).pack(side=tk.RIGHT, padx=4)
+
+        ttk.Label(frame, text="Test Split (0-1)").pack(anchor="w", pady=(8, 2))
+        ttk.Entry(frame, textvariable=self.test_split).pack(fill=tk.X)
+
+        ttk.Label(frame, text="Max Depth (0 = None)").pack(anchor="w", pady=(8, 2))
+        ttk.Entry(frame, textvariable=self.max_depth).pack(fill=tk.X)
+
+        ttk.Label(frame, text="Min Samples Leaf").pack(anchor="w", pady=(8, 2))
+        ttk.Entry(frame, textvariable=self.min_samples_leaf).pack(fill=tk.X)
+
+        ttk.Button(frame, text="Train Model", command=self.run_training).pack(fill=tk.X, pady=8)
 
     def _build_classifier_tab(self):
         frame = self.cls_section
@@ -190,31 +225,36 @@ class App:
         ttk.Button(frame, text="Load Model (preview)", command=self.load_model).pack(fill=tk.X, pady=8)
 
     def _build_config_panel(self, parent):
-        panel = tk.Frame(parent, bg="#242424")
-        panel.pack(fill=tk.X, padx=12, pady=4)
+        self.config_panel = tk.Frame(parent, bg="#242424")
+        self.config_panel.pack(fill=tk.X, padx=12, pady=4)
 
-        ttk.Label(panel, text="Threshold Method").pack(anchor="w")
-        ttk.Combobox(panel, textvariable=self.method, values=["otsu", "manual", "canny"], state="readonly").pack(fill=tk.X, pady=4)
+        ttk.Label(self.config_panel, text="Threshold Method").pack(anchor="w")
+        ttk.Combobox(
+            self.config_panel,
+            textvariable=self.method,
+            values=["otsu", "manual", "canny"],
+            state="readonly",
+        ).pack(fill=tk.X, pady=4)
 
-        ttk.Checkbutton(panel, text="Invert", variable=self.invert).pack(anchor="w")
-        ttk.Checkbutton(panel, text="Raw Hu (no log)", variable=self.raw_hu).pack(anchor="w")
+        ttk.Checkbutton(self.config_panel, text="Invert", variable=self.invert).pack(anchor="w")
+        ttk.Checkbutton(self.config_panel, text="Raw Hu (no log)", variable=self.raw_hu).pack(anchor="w")
 
-        ttk.Label(panel, text="Manual Threshold").pack(anchor="w", pady=(6, 0))
-        ttk.Scale(panel, from_=0, to=255, variable=self.manual_thresh, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        ttk.Label(self.config_panel, text="Manual Threshold").pack(anchor="w", pady=(6, 0))
+        ttk.Scale(self.config_panel, from_=0, to=255, variable=self.manual_thresh, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
-        ttk.Label(panel, text="Min Area").pack(anchor="w", pady=(6, 0))
-        ttk.Scale(panel, from_=1, to=5000, variable=self.min_area, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        ttk.Label(self.config_panel, text="Min Area").pack(anchor="w", pady=(6, 0))
+        ttk.Scale(self.config_panel, from_=1, to=5000, variable=self.min_area, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
-        ttk.Label(panel, text="Morph Size").pack(anchor="w", pady=(6, 0))
-        ttk.Scale(panel, from_=1, to=21, variable=self.morph_size, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        ttk.Label(self.config_panel, text="Morph Size").pack(anchor="w", pady=(6, 0))
+        ttk.Scale(self.config_panel, from_=1, to=21, variable=self.morph_size, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
-        ttk.Label(panel, text="Dilate Iterations").pack(anchor="w", pady=(6, 0))
-        ttk.Scale(panel, from_=0, to=5, variable=self.dilate_iter, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        ttk.Label(self.config_panel, text="Dilate Iterations").pack(anchor="w", pady=(6, 0))
+        ttk.Scale(self.config_panel, from_=0, to=5, variable=self.dilate_iter, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
-        ttk.Separator(panel).pack(fill=tk.X, pady=6)
-        ttk.Checkbutton(panel, text="Use ROI (preview)", variable=self.use_roi).pack(anchor="w")
+        ttk.Separator(self.config_panel).pack(fill=tk.X, pady=6)
+        ttk.Checkbutton(self.config_panel, text="Use ROI (preview)", variable=self.use_roi).pack(anchor="w")
 
-        roi_row = tk.Frame(panel, bg="#242424")
+        roi_row = tk.Frame(self.config_panel, bg="#242424")
         roi_row.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(roi_row, text="x").pack(side=tk.LEFT)
         ttk.Entry(roi_row, textvariable=self.roi_x, width=5).pack(side=tk.LEFT, padx=4)
@@ -228,16 +268,32 @@ class App:
     def _bind_events(self):
         self.mode.trace_add("write", lambda *_: self._sync_tabs())
         self._sync_tabs()
-        self.root.after(200, self.start_preview)
 
     def _sync_tabs(self):
         mode = self.mode.get()
         if mode == "Generator":
             self.gen_section.pack(fill=tk.X, padx=12, pady=(4, 8))
             self.cls_section.pack_forget()
-        else:
+            self.train_section.pack_forget()
+            self.config_panel.pack(fill=tk.X, padx=12, pady=4)
+            self.pred_row.pack_forget()
+            self.pred_var.set("Pred: -")
+            self.start_preview()
+        elif mode == "Classifier":
             self.cls_section.pack(fill=tk.X, padx=12, pady=(4, 8))
             self.gen_section.pack_forget()
+            self.train_section.pack_forget()
+            self.config_panel.pack(fill=tk.X, padx=12, pady=4)
+            self.pred_row.pack(fill=tk.X, padx=12, pady=(2, 6))
+            self.start_preview()
+        else:
+            self.train_section.pack(fill=tk.X, padx=12, pady=(4, 8))
+            self.gen_section.pack_forget()
+            self.cls_section.pack_forget()
+            self.config_panel.pack_forget()
+            self.pred_row.pack_forget()
+            self.pred_var.set("Pred: -")
+            self.stop_preview()
 
     def log_msg(self, msg):
         self.log.insert(tk.END, msg + "\n")
@@ -270,6 +326,38 @@ class App:
 
     def stop_process(self):
         self.process = None
+
+    def run_training(self):
+        def _worker():
+            args = [
+                "trainer.py",
+                "--data",
+                self.train_data.get(),
+                "--model",
+                self.train_model.get(),
+                "--test-split",
+                str(float(self.test_split.get())),
+                "--min-samples-leaf",
+                str(int(self.min_samples_leaf.get())),
+            ]
+            max_depth = int(self.max_depth.get())
+            if max_depth > 0:
+                args.extend(["--max-depth", str(max_depth)])
+
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(buf):
+                old_argv = sys.argv
+                try:
+                    sys.argv = args
+                    trainer.main()
+                finally:
+                    sys.argv = old_argv
+
+            output = buf.getvalue().strip()
+            if output:
+                self.log_msg(output)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def start_preview(self):
         if self.preview_running:
