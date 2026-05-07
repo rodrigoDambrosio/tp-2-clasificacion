@@ -30,14 +30,12 @@ class App:
         self.preview_scale = 1.0
         self.frame_tile_scale = 1.0
         self.frame_tile_pad = (0, 0)
-        self.image_mode = tk.StringVar(value="webcam")
-        self.image_path = tk.StringVar(value="")
-        self.static_frame = None
 
         self.mode = tk.StringVar(value="Generator")
         self.method = tk.StringVar(value="otsu")
         self.invert = tk.BooleanVar(value=False)
         self.raw_hu = tk.BooleanVar(value=False)
+        self.manual_thresh = tk.IntVar(value=127)
 
         self.min_area = tk.IntVar(value=800)
         self.morph_size = tk.IntVar(value=5)
@@ -94,13 +92,18 @@ class App:
         left.bind("<Configure>", _on_left_configure)
         left_canvas.bind("<Configure>", _on_canvas_configure)
 
-        right = tk.Frame(main, bg="#1f1f1f")
+        right = tk.PanedWindow(main, orient=tk.VERTICAL, bg="#1f1f1f", sashwidth=6, sashrelief=tk.RAISED)
         right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
         ttk.Style().theme_use("clam")
         style = ttk.Style()
         style.configure("TLabel", background="#242424", foreground="#e6e6e6")
-        style.configure("TButton", background="#3a3a3a", foreground="#ffffff")
+        style.configure("TButton", background="#3a3a3a", foreground="#ffffff", padding=(8, 4))
+        style.map(
+            "TButton",
+            background=[("active", "#4a4a4a"), ("pressed", "#2f2f2f")],
+            foreground=[("disabled", "#8a8a8a")],
+        )
         style.configure("TFrame", background="#242424")
         style.configure("TNotebook", background="#242424")
         style.configure("TNotebook.Tab", background="#2a2a2a", foreground="#e6e6e6")
@@ -113,64 +116,52 @@ class App:
         tk.Label(mode_row, text="Mode", bg="#242424", fg="#cfcfcf").pack(anchor="w")
         ttk.Combobox(mode_row, textvariable=self.mode, values=["Generator", "Trainer", "Classifier"], state="readonly").pack(fill=tk.X, pady=4)
 
-        preview_row = tk.Frame(left, bg="#242424")
-        preview_row.pack(fill=tk.X, padx=12, pady=(8, 6))
-        self.preview_btn = ttk.Button(preview_row, text="Start Preview", command=self.start_preview)
-        self.preview_btn.pack(fill=tk.X, pady=2)
-        self.preview_stop_btn = ttk.Button(preview_row, text="Stop Preview", command=self.stop_preview)
-        self.preview_stop_btn.pack(fill=tk.X, pady=2)
-
-        source_row = tk.Frame(left, bg="#242424")
-        source_row.pack(fill=tk.X, padx=12, pady=(4, 6))
-        ttk.Label(source_row, text="Source").pack(anchor="w")
-        ttk.Combobox(
-            source_row,
-            textvariable=self.image_mode,
-            values=["webcam", "image"],
-            state="readonly",
-        ).pack(fill=tk.X, pady=2)
-
-        image_row = tk.Frame(left, bg="#242424")
-        image_row.pack(fill=tk.X, padx=12, pady=(2, 6))
-        ttk.Entry(image_row, textvariable=self.image_path).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(image_row, text="Browse", command=self.browse_image).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(image_row, text="Load Image", command=self.load_image).pack(fill=tk.X, pady=(4, 0))
+        pred_row = tk.Frame(left, bg="#242424")
+        pred_row.pack(fill=tk.X, padx=12, pady=(2, 6))
+        tk.Label(pred_row, text="Prediction", bg="#242424", fg="#cfcfcf").pack(anchor="w")
+        tk.Label(
+            pred_row,
+            textvariable=self.pred_var,
+            bg="#242424",
+            fg="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).pack(fill=tk.X)
 
         ttk.Separator(left).pack(fill=tk.X, padx=12, pady=8)
 
-        self.notebook = ttk.Notebook(left)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
-
-        self.gen_tab = ttk.Frame(self.notebook)
-        self.train_tab = ttk.Frame(self.notebook)
-        self.cls_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.gen_tab, text="Generator")
-        self.notebook.add(self.train_tab, text="Trainer")
-        self.notebook.add(self.cls_tab, text="Classifier")
-
+        self.gen_section = tk.Frame(left, bg="#242424")
+        self.gen_section.pack(fill=tk.X, padx=12, pady=(4, 8))
         self._build_generator_tab()
-        self._build_trainer_tab()
+
+        self.cls_section = tk.Frame(left, bg="#242424")
+        self.cls_section.pack(fill=tk.X, padx=12, pady=(4, 8))
         self._build_classifier_tab()
 
         ttk.Separator(left).pack(fill=tk.X, padx=12, pady=8)
 
         self._build_config_panel(left)
 
-        self.preview_label = tk.Label(right, bg="#1f1f1f")
+        preview_frame = tk.Frame(right, bg="#1f1f1f")
+        self.preview_label = tk.Label(preview_frame, bg="#1f1f1f")
         self.preview_label.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
         self.preview_label.bind("<ButtonPress-1>", self.on_preview_mouse_down)
         self.preview_label.bind("<B1-Motion>", self.on_preview_mouse_move)
         self.preview_label.bind("<ButtonRelease-1>", self.on_preview_mouse_up)
 
-        pred = tk.Label(right, textvariable=self.pred_var, bg="#1f1f1f", fg="#e6e6e6", font=("Segoe UI", 12, "bold"))
+        pred = tk.Label(preview_frame, textvariable=self.pred_var, bg="#1f1f1f", fg="#e6e6e6", font=("Segoe UI", 12, "bold"))
         pred.pack(anchor="w", padx=16)
 
-        self.log = tk.Text(right, height=8, bg="#1b1b1b", fg="#e6e6e6", insertbackground="#ffffff")
-        self.log.pack(fill=tk.BOTH, expand=False, padx=16, pady=16)
-        self.log_msg("UI ready. Preview uses shared pipeline.")
+        log_frame = tk.Frame(right, bg="#1f1f1f")
+        self.log = tk.Text(log_frame, height=8, bg="#1b1b1b", fg="#e6e6e6", insertbackground="#ffffff")
+        self.log.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+
+        right.add(preview_frame, stretch="always")
+        right.add(log_frame, stretch="never", height=180)
+        self.log_msg("UI ready. Preview is always on.")
 
     def _build_generator_tab(self):
-        frame = self.gen_tab
+        frame = self.gen_section
         ttk.Label(frame, text="Label (int)").pack(anchor="w", pady=(6, 2))
         ttk.Entry(frame, textvariable=self.gen_label).pack(fill=tk.X)
 
@@ -182,31 +173,8 @@ class App:
 
         ttk.Button(frame, text="Capture Hu (preview)", command=self.capture_hu).pack(fill=tk.X, pady=8)
 
-    def _build_trainer_tab(self):
-        frame = self.train_tab
-        ttk.Label(frame, text="Dataset CSV").pack(anchor="w", pady=(6, 2))
-        row = tk.Frame(frame, bg="#242424")
-        row.pack(fill=tk.X)
-        ttk.Entry(row, textvariable=self.train_data).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="Browse", command=self.browse_train_data).pack(side=tk.RIGHT, padx=4)
-
-        ttk.Label(frame, text="Model Output").pack(anchor="w", pady=(8, 2))
-        row = tk.Frame(frame, bg="#242424")
-        row.pack(fill=tk.X)
-        ttk.Entry(row, textvariable=self.train_model).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="Browse", command=self.browse_train_model).pack(side=tk.RIGHT, padx=4)
-
-        ttk.Label(frame, text="Test Split (0-1)").pack(anchor="w", pady=(8, 2))
-        ttk.Entry(frame, textvariable=self.test_split).pack(fill=tk.X)
-
-        ttk.Label(frame, text="Max Depth (0 = None)").pack(anchor="w", pady=(8, 2))
-        ttk.Entry(frame, textvariable=self.max_depth).pack(fill=tk.X)
-
-        ttk.Label(frame, text="Min Samples Leaf").pack(anchor="w", pady=(8, 2))
-        ttk.Entry(frame, textvariable=self.min_samples_leaf).pack(fill=tk.X)
-
     def _build_classifier_tab(self):
-        frame = self.cls_tab
+        frame = self.cls_section
         ttk.Label(frame, text="Model File").pack(anchor="w", pady=(6, 2))
         row = tk.Frame(frame, bg="#242424")
         row.pack(fill=tk.X)
@@ -226,10 +194,13 @@ class App:
         panel.pack(fill=tk.X, padx=12, pady=4)
 
         ttk.Label(panel, text="Threshold Method").pack(anchor="w")
-        ttk.Combobox(panel, textvariable=self.method, values=["otsu", "canny"], state="readonly").pack(fill=tk.X, pady=4)
+        ttk.Combobox(panel, textvariable=self.method, values=["otsu", "manual", "canny"], state="readonly").pack(fill=tk.X, pady=4)
 
         ttk.Checkbutton(panel, text="Invert", variable=self.invert).pack(anchor="w")
         ttk.Checkbutton(panel, text="Raw Hu (no log)", variable=self.raw_hu).pack(anchor="w")
+
+        ttk.Label(panel, text="Manual Threshold").pack(anchor="w", pady=(6, 0))
+        ttk.Scale(panel, from_=0, to=255, variable=self.manual_thresh, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
         ttk.Label(panel, text="Min Area").pack(anchor="w", pady=(6, 0))
         ttk.Scale(panel, from_=1, to=5000, variable=self.min_area, orient=tk.HORIZONTAL).pack(fill=tk.X)
@@ -257,22 +228,16 @@ class App:
     def _bind_events(self):
         self.mode.trace_add("write", lambda *_: self._sync_tabs())
         self._sync_tabs()
+        self.root.after(200, self.start_preview)
 
     def _sync_tabs(self):
         mode = self.mode.get()
         if mode == "Generator":
-            self.notebook.select(self.gen_tab)
-        elif mode == "Trainer":
-            self.notebook.select(self.train_tab)
+            self.gen_section.pack(fill=tk.X, padx=12, pady=(4, 8))
+            self.cls_section.pack_forget()
         else:
-            self.notebook.select(self.cls_tab)
-
-        if mode == "Trainer":
-            self.preview_btn.configure(state="disabled")
-            self.preview_stop_btn.configure(state="disabled")
-        else:
-            self.preview_btn.configure(state="normal")
-            self.preview_stop_btn.configure(state="normal")
+            self.cls_section.pack(fill=tk.X, padx=12, pady=(4, 8))
+            self.gen_section.pack_forget()
 
     def log_msg(self, msg):
         self.log.insert(tk.END, msg + "\n")
@@ -303,39 +268,15 @@ class App:
         if path:
             self.cls_labels.set(path)
 
-    def browse_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp")])
-        if path:
-            self.image_path.set(path)
-
-    def load_image(self):
-        path = self.image_path.get().strip()
-        if not path:
-            self.log_msg("Select an image path")
-            return
-        frame = cv2.imread(path)
-        if frame is None:
-            self.log_msg("Failed to load image")
-            return
-        self.static_frame = frame
-        self.image_mode.set("image")
-        self.log_msg(f"Loaded image: {path}")
-        if self.preview_running:
-            self.update_preview()
-
     def stop_process(self):
         self.process = None
 
     def start_preview(self):
         if self.preview_running:
             return
-        if self.image_mode.get() == "webcam":
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                self.log_msg("Could not open camera")
-                return
-        elif self.static_frame is None:
-            self.log_msg("Load an image first")
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            self.log_msg("Could not open camera")
             return
         self.preview_running = True
         self.update_preview()
@@ -360,6 +301,7 @@ class App:
             morph_size=max(1, int(self.morph_size.get()) | 1),
             dilate_iter=int(self.dilate_iter.get()),
             method=method,
+            manual_thresh=int(self.manual_thresh.get()),
         )
 
     def _get_preview_roi(self):
@@ -468,19 +410,13 @@ class App:
 
     def update_preview(self):
         if not self.preview_running or self.cap is None:
-            if self.preview_running and self.image_mode.get() == "image" and self.static_frame is not None:
-                pass
-            else:
-                return
+            return
 
-        if self.image_mode.get() == "image" and self.static_frame is not None:
-            frame = self.static_frame.copy()
-        else:
-            ret, frame = self.cap.read()
-            if not ret:
-                self.log_msg("Failed to read frame")
-                self.stop_preview()
-                return
+        ret, frame = self.cap.read()
+        if not ret:
+            self.log_msg("Failed to read frame")
+            self.stop_preview()
+            return
 
         config = self._build_preview_config()
         roi = self._get_preview_roi()
@@ -498,8 +434,10 @@ class App:
         elif contour is not None:
             cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
 
-        if self.mode.get() == "Classifier" and self.model is not None:
-            if result["hu"] is not None:
+        if self.mode.get() == "Classifier":
+            if self.model is None:
+                self.pred_var.set("Pred: load model")
+            elif result["hu"] is not None:
                 pred = self.model.predict([result["hu"]])[0]
                 label_text = self.label_map.get(int(pred), str(int(pred)))
                 self.pred_var.set(f"Pred: {label_text} ({int(pred)})")
@@ -533,7 +471,10 @@ class App:
         preview = self._prepare_previews(display, thresh, crop)
         preview_rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(preview_rgb)
-        target_w, target_h = 800, 450
+        target_w = max(1, self.preview_label.winfo_width())
+        target_h = max(1, self.preview_label.winfo_height())
+        if target_w < 10 or target_h < 10:
+            target_w, target_h = 800, 450
         resized, scale, pad_x, pad_y = self._resize_with_letterbox(pil, target_w, target_h)
         self.preview_half = (preview.shape[1] // 2, preview.shape[0] // 2)
         self.preview_scale = scale
@@ -542,10 +483,7 @@ class App:
         self.preview_label.configure(image=photo)
         self.preview_label.image = photo
 
-        if self.image_mode.get() == "image":
-            self.root.after(200, self.update_preview)
-        else:
-            self.root.after(30, self.update_preview)
+        self.root.after(30, self.update_preview)
 
     def capture_hu(self):
         if self.last_result is None or self.last_result["hu"] is None:
@@ -559,6 +497,8 @@ class App:
         row = list(self.last_result["hu"]) + [label]
         write_header = not os.path.exists(output) or os.path.getsize(output) == 0
         append_row(output, row, write_header=write_header)
+        hu_str = ", ".join(f"{v:.6g}" for v in self.last_result["hu"])
+        self.log_msg(f"HU: [{hu_str}]")
         self.log_msg(f"Saved sample label={label} -> {output}")
 
     def load_model(self):
