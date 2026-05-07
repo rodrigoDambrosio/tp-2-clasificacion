@@ -32,6 +32,7 @@ def main():
         default=1,
         help="Number of dilation iterations for Canny edges (default 1)",
     )
+    parser.add_argument("--min-confidence", type=float, default=0.7)
     args = parser.parse_args()
 
     clf = load(args.model)
@@ -65,6 +66,7 @@ def main():
         button_rect = roi_selector.update_button(frame.shape)
         pred_text = None
         pred_color = (0, 200, 0)
+        contour_color = (0, 255, 0)
 
         roi = roi_selector.get_clamped_roi(frame.shape)
         result = analyze_frame(frame, config, roi=roi)
@@ -75,19 +77,33 @@ def main():
             crop = result["crop"]
             cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
             if contour is not None:
-                cv2.drawContours(crop, [contour], -1, (0, 255, 0), 2)
+                cv2.drawContours(crop, [contour], -1, contour_color, 2)
             cv2.imshow("crop", crop)
             cv2.imshow("thresh", result["thresh"])
         else:
             if contour is not None:
-                cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
+                cv2.drawContours(display, [contour], -1, contour_color, 2)
             cv2.imshow("thresh", result["thresh"])
 
         if result["hu"] is not None:
-            pred = clf.predict([result["hu"]])[0]
-            pred_int = int(pred)
-            label_text = label_map.get(pred_int, str(pred_int))
-            pred_text = f"Pred: {label_text} ({pred_int})"
+            if hasattr(clf, "predict_proba"):
+                proba = clf.predict_proba([result["hu"]])[0]
+                best_idx = int(proba.argmax())
+                best_conf = float(proba[best_idx])
+                pred = clf.classes_[best_idx]
+                if best_conf < args.min_confidence:
+                    pred_text = f"Unknown ({best_conf:.2f})"
+                    pred_color = (200, 40, 40)
+                    contour_color = (0, 0, 255)
+                else:
+                    pred_int = int(pred)
+                    label_text = label_map.get(pred_int, str(pred_int))
+                    pred_text = f"Pred: {label_text} ({pred_int})"
+            else:
+                pred = clf.predict([result["hu"]])[0]
+                pred_int = int(pred)
+                label_text = label_map.get(pred_int, str(pred_int))
+                pred_text = f"Pred: {label_text} ({pred_int})"
         else:
             pred_text = "No contour"
             pred_color = (200, 40, 40)

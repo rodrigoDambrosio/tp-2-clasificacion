@@ -42,6 +42,8 @@ class App:
         self.invert = tk.BooleanVar(value=False)
         self.raw_hu = tk.BooleanVar(value=False)
         self.manual_thresh = tk.IntVar(value=127)
+        self.min_confidence = tk.DoubleVar(value=0.7)
+        self.min_confidence_label = tk.StringVar(value="0.70")
 
         self.min_area = tk.IntVar(value=800)
         self.morph_size = tk.IntVar(value=5)
@@ -59,12 +61,13 @@ class App:
         self.cls_model = tk.StringVar(value="model.joblib")
         self.cls_labels = tk.StringVar(value="labels.json")
         self.pred_var = tk.StringVar(value="Pred: -")
+        self.conf_var = tk.StringVar(value="Conf: -")
 
         self.train_data = tk.StringVar(value="dataset.csv")
         self.train_model = tk.StringVar(value="model.joblib")
         self.test_split = tk.DoubleVar(value=0.2)
-        self.max_depth = tk.IntVar(value=0)
-        self.min_samples_leaf = tk.IntVar(value=1)
+        self.max_depth = tk.IntVar(value=6)
+        self.min_samples_leaf = tk.IntVar(value=5)
 
         self._build_layout()
         self._bind_events()
@@ -131,6 +134,13 @@ class App:
             bg="#242424",
             fg="#ffffff",
             font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            self.pred_row,
+            textvariable=self.conf_var,
+            bg="#242424",
+            fg="#cfcfcf",
             anchor="w",
         ).pack(fill=tk.X)
 
@@ -242,6 +252,12 @@ class App:
         ttk.Label(self.config_panel, text="Manual Threshold").pack(anchor="w", pady=(6, 0))
         ttk.Scale(self.config_panel, from_=0, to=255, variable=self.manual_thresh, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
+        ttk.Label(self.config_panel, text="Min Confidence (classifier)").pack(anchor="w", pady=(6, 0))
+        conf_row = tk.Frame(self.config_panel, bg="#242424")
+        conf_row.pack(fill=tk.X)
+        ttk.Scale(conf_row, from_=0.0, to=1.0, variable=self.min_confidence, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(conf_row, textvariable=self.min_confidence_label, width=5, anchor="e").pack(side=tk.RIGHT)
+
         ttk.Label(self.config_panel, text="Min Area").pack(anchor="w", pady=(6, 0))
         ttk.Scale(self.config_panel, from_=1, to=5000, variable=self.min_area, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
@@ -266,6 +282,7 @@ class App:
         ttk.Entry(roi_row, textvariable=self.roi_h, width=5).pack(side=tk.LEFT, padx=4)
 
     def _bind_events(self):
+        self.min_confidence.trace_add("write", lambda *_: self.min_confidence_label.set(f"{self.min_confidence.get():.2f}"))
         self.mode.trace_add("write", lambda *_: self._sync_tabs())
         self._sync_tabs()
 
@@ -278,6 +295,7 @@ class App:
             self.config_panel.pack(fill=tk.X, padx=12, pady=4)
             self.pred_row.pack_forget()
             self.pred_var.set("Pred: -")
+            self.conf_var.set("Conf: -")
             self.start_preview()
         elif mode == "Classifier":
             self.cls_section.pack(fill=tk.X, padx=12, pady=(4, 8))
@@ -293,6 +311,7 @@ class App:
             self.config_panel.pack_forget()
             self.pred_row.pack_forget()
             self.pred_var.set("Pred: -")
+            self.conf_var.set("Conf: -")
             self.stop_preview()
 
     def log_msg(self, msg):
@@ -513,34 +532,63 @@ class App:
 
         display = frame.copy()
         contour = result["contour"]
-        if result["roi"] is not None:
-            x, y, w, h = result["roi"]
-            cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            if contour is not None:
-                roi_view = display[y : y + h, x : x + w]
-                cv2.drawContours(roi_view, [contour], -1, (0, 255, 0), 2)
-        elif contour is not None:
-            cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
+        contour_color = (0, 255, 0)
 
         if self.mode.get() == "Classifier":
             if self.model is None:
                 self.pred_var.set("Pred: load model")
+                self.conf_var.set("Conf: -")
             elif result["hu"] is not None:
-                pred = self.model.predict([result["hu"]])[0]
-                label_text = self.label_map.get(int(pred), str(int(pred)))
-                self.pred_var.set(f"Pred: {label_text} ({int(pred)})")
-                cv2.putText(
-                    display,
-                    f"Pred: {label_text} ({int(pred)})",
-                    (10, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 200, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
+                if hasattr(self.model, "predict_proba"):
+                    proba = self.model.predict_proba([result["hu"]])[0]
+                    best_idx = int(proba.argmax())
+                    best_conf = float(proba[best_idx])
+                    pred = self.model.classes_[best_idx]
+                    self.conf_var.set(f"Conf: {best_conf:.2f}")
+                    if best_conf < float(self.min_confidence.get()):
+                        self.pred_var.set(f"Pred: Unknown ({best_conf:.2f})")
+                        contour_color = (0, 0, 255)
+                        cv2.putText(
+                            display,
+                            f"Unknown ({best_conf:.2f})",
+                            (10, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (200, 40, 40),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                    else:
+                        label_text = self.label_map.get(int(pred), str(int(pred)))
+                        self.pred_var.set(f"Pred: {label_text} ({int(pred)})")
+                        cv2.putText(
+                            display,
+                            f"Pred: {label_text} ({int(pred)}) {best_conf:.2f}",
+                            (10, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 200, 0),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                else:
+                    pred = self.model.predict([result["hu"]])[0]
+                    label_text = self.label_map.get(int(pred), str(int(pred)))
+                    self.pred_var.set(f"Pred: {label_text} ({int(pred)})")
+                    self.conf_var.set("Conf: -")
+                    cv2.putText(
+                        display,
+                        f"Pred: {label_text} ({int(pred)})",
+                        (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 200, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
             else:
                 self.pred_var.set("Pred: -")
+                self.conf_var.set("Conf: -")
                 cv2.putText(
                     display,
                     "No contour",
@@ -551,6 +599,15 @@ class App:
                     2,
                     cv2.LINE_AA,
                 )
+
+        if result["roi"] is not None:
+            x, y, w, h = result["roi"]
+            cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            if contour is not None:
+                roi_view = display[y : y + h, x : x + w]
+                cv2.drawContours(roi_view, [contour], -1, contour_color, 2)
+        elif contour is not None:
+            cv2.drawContours(display, [contour], -1, contour_color, 2)
 
         thresh = result["thresh"]
         crop = result["crop"]

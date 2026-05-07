@@ -45,8 +45,8 @@ def main():
     parser.add_argument("--model", type=str, default="model.joblib")
     parser.add_argument("--test-split", type=float, default=0.0)
     parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--max-depth", type=int, default=None)
-    parser.add_argument("--min-samples-leaf", type=int, default=1)
+    parser.add_argument("--max-depth", type=int, default=6)
+    parser.add_argument("--min-samples-leaf", type=int, default=5)
     args = parser.parse_args()
 
     X, y = load_dataset(args.data)
