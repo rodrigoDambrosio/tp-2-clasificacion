@@ -3,7 +3,8 @@ import csv
 import os
 import cv2
 
-from vision_utils import preprocess_frame, find_largest_contour, compute_hu
+from commons import RoiSelector, overlay_frame, parse_roi_arg
+from pipeline import PipelineConfig, analyze_frame
 
 
 def append_row(path, row, write_header=False):
@@ -86,44 +87,22 @@ def main():
     # runtime state
     invert = args.invert
     min_area = args.min_area
+    config = PipelineConfig(
+        invert=invert,
+        raw_hu=args.raw_hu,
+        edges=args.edges,
+        min_area=min_area,
+        morph_size=args.morph_size,
+        dilate_iter=args.dilate_iter,
+    )
 
-    # ROI selection state
-    roi = None  # tuple (x,y,w,h)
-    roi_mode = False  # True when button clicked and waiting for drag
-    drawing = False
-    ix = iy = -1
+    roi_selector = RoiSelector()
+    if args.roi:
+        roi_selector.roi = parse_roi_arg(args.roi)
+    if args.select_roi:
+        roi_selector.roi_mode = True
 
-    # shared button rect, updated each frame so mouse callback can read it
-    button_rect = [0, 0, 0, 0]
-
-    def on_mouse(event, x, y, flags, param):
-        nonlocal roi, roi_mode, drawing, ix, iy
-        bx, by, bw, bh = button_rect
-        # click inside button toggles ROI mode
-        if event == cv2.EVENT_LBUTTONDOWN:
-            if bx <= x <= bx + bw and by <= y <= by + bh:
-                roi_mode = True
-                drawing = False
-                return
-            if roi_mode:
-                drawing = True
-                ix, iy = x, y
-                return
-
-        if event == cv2.EVENT_MOUSEMOVE and drawing:
-            # just update; actual rectangle drawn in main loop
-            return
-
-        if event == cv2.EVENT_LBUTTONUP and drawing:
-            drawing = False
-            x0, y0 = min(ix, x), min(iy, y)
-            x1, y1 = max(ix, x), max(iy, y)
-            w, h = x1 - x0, y1 - y0
-            if w > 5 and h > 5:
-                roi = (x0, y0, w, h)
-            roi_mode = False
-
-    cv2.setMouseCallback("frame", on_mouse)
+    cv2.setMouseCallback("frame", roi_selector.on_mouse)
 
     print("SPACE: capture | Q or ESC: quit | Click button to select ROI")
 
@@ -138,73 +117,41 @@ def main():
             print("No images found in", args.input_dir)
             return
 
-    def process_frame_and_get_contour(frame):
-        h_frame, w_frame = frame.shape[:2]
-
-        # compute button position (top-right)
-        bw, bh = 140, 28
-        bx, by = max(10, w_frame - bw - 10), 10
-        button_rect[0], button_rect[1], button_rect[2], button_rect[3] = bx, by, bw, bh
-
+    def process_frame_and_get_result(frame):
+        button_rect = roi_selector.update_button(frame.shape)
         display = frame.copy()
 
-        # draw button
-        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (50, 50, 50), -1)
-        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (200, 200, 200), 1)
-        cv2.putText(
-            display,
-            "Select ROI",
-            (bx + 8, by + 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
+        roi = roi_selector.get_clamped_roi(frame.shape)
+        result = analyze_frame(frame, config, roi=roi)
 
-        if roi is not None:
-            x, y, w, h = roi
-            x = max(0, min(x, w_frame - 1))
-            y = max(0, min(y, h_frame - 1))
-            w = max(1, min(w, w_frame - x))
-            h = max(1, min(h, h_frame - y))
-            crop = frame[y : y + h, x : x + w]
-            method = "canny" if args.edges else "otsu"
-            _, thresh_crop = preprocess_frame(
-                crop, invert=invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
-            )
-            contour = find_largest_contour(thresh_crop, min_area=min_area)
+        if result["roi"] is not None:
+            x, y, w, h = result["roi"]
+            crop = result["crop"]
+            contour = result["contour"]
             # draw ROI on display
             cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
             if contour is not None:
                 cv2.drawContours(crop, [contour], -1, (0, 255, 0), 2)
             cv2.imshow("crop", crop)
-            cv2.imshow("thresh", thresh_crop)
+            cv2.imshow("thresh", result["thresh"])
         else:
-            method = "canny" if args.edges else "otsu"
-            _, thresh = preprocess_frame(
-                frame, invert=invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
-            )
-            contour = find_largest_contour(thresh, min_area=min_area)
+            contour = result["contour"]
             if contour is not None:
                 cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
-            cv2.imshow("thresh", thresh)
+            cv2.imshow("thresh", result["thresh"])
 
-        cv2.imshow("frame", display)
-        # show status
-        status_text = f"SPACE: capture  Q/ESC: quit  Invert: {'ON' if invert else 'OFF'}  MinArea: {min_area}"
-        cv2.putText(
+        status_lines = [
+            "SPACE: capture  Q/ESC: quit",
+            f"Invert: {'ON' if invert else 'OFF'}  MinArea: {min_area}",
+        ]
+        display = overlay_frame(
             display,
-            status_text,
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
+            button_rect,
+            status_lines=status_lines,
+            button_active=roi_selector.roi_mode,
         )
         cv2.imshow("frame", display)
-        return contour
+        return result
 
     # Main loop: either iterate camera frames or batch files
     file_idx = 0
@@ -218,12 +165,14 @@ def main():
                 print("Failed to load", path)
                 file_idx += 1
                 continue
-            contour = process_frame_and_get_contour(frame)
+            result = process_frame_and_get_result(frame)
         else:
             ret, frame = cap.read()
             if not ret:
                 break
-            contour = process_frame_and_get_contour(frame)
+            result = process_frame_and_get_result(frame)
+
+        contour = result["contour"]
 
         # UI and contour display are handled inside process_frame_and_get_contour
 
@@ -235,36 +184,32 @@ def main():
         # runtime controls for debugging detection
         if key == ord("i"):
             invert = not invert
+            config.invert = invert
             print(f"Invert set to {invert}")
             continue
         if key == ord("-") or key == ord("_"):
             min_area = max(1, min_area - 100)
+            config.min_area = min_area
             print(f"min_area={min_area}")
             continue
         if key == ord("=") or key == ord("+"):
             min_area = min_area + 100
+            config.min_area = min_area
             print(f"min_area={min_area}")
             continue
         if key == ord("r"):
-            roi = None
+            roi_selector.clear()
             print("ROI cleared")
             continue
         # In webcam mode space still captures (using --label if provided)
         if key == ord(" ") and not args.input_dir:
-            if roi is not None:
-                x, y, w, h = roi
-                crop = frame[y : y + h, x : x + w]
-                _, thresh_crop = preprocess_frame(crop, invert=invert, method=("canny" if args.edges else "otsu"))
-                contour = find_largest_contour(thresh_crop, min_area=min_area)
-                if contour is None:
+            hu = result["hu"]
+            if hu is None:
+                if result["roi"] is not None:
                     print("No contour found in ROI")
-                    continue
-                hu = compute_hu(contour, use_log=not args.raw_hu)
-            else:
-                if contour is None:
+                else:
                     print("No contour found")
-                    continue
-                hu = compute_hu(contour, use_log=not args.raw_hu)
+                continue
 
             print(hu.tolist())
             if args.output:
@@ -281,14 +226,13 @@ def main():
             # Numeric keys 0-9 assign that label and save
             if ord("0") <= key <= ord("9"):
                 label = int(chr(key))
-                if contour is None:
+                hu = result["hu"]
+                if hu is None:
                     print("No contour found; skipping save")
-                else:
-                    hu = compute_hu(contour, use_log=not args.raw_hu)
-                    if args.output:
-                        write_header = not os.path.exists(args.output) or os.path.getsize(args.output) == 0
-                        append_row(args.output, list(hu) + [label], write_header=write_header)
-                        print(f"Saved {path} label={label} -> {args.output}")
+                elif args.output:
+                    write_header = not os.path.exists(args.output) or os.path.getsize(args.output) == 0
+                    append_row(args.output, list(hu) + [label], write_header=write_header)
+                    print(f"Saved {path} label={label} -> {args.output}")
                 file_idx += 1
                 continue
 
@@ -306,14 +250,13 @@ def main():
                 except ValueError:
                     print("Invalid label")
                     continue
-                if contour is None:
+                hu = result["hu"]
+                if hu is None:
                     print("No contour found; skipping save")
-                else:
-                    hu = compute_hu(contour, use_log=not args.raw_hu)
-                    if args.output:
-                        write_header = not os.path.exists(args.output) or os.path.getsize(args.output) == 0
-                        append_row(args.output, list(hu) + [label], write_header=write_header)
-                        print(f"Saved {path} label={label} -> {args.output}")
+                elif args.output:
+                    write_header = not os.path.exists(args.output) or os.path.getsize(args.output) == 0
+                    append_row(args.output, list(hu) + [label], write_header=write_header)
+                    print(f"Saved {path} label={label} -> {args.output}")
                 file_idx += 1
                 continue
 

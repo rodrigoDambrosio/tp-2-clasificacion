@@ -3,12 +3,20 @@ import cv2
 import numpy as np
 
 
-def preprocess_frame(frame, invert=False, blur_ksize=5, method="otsu", close_ksize=5, dilate_iter=1):
+def preprocess_frame(
+    frame,
+    invert=False,
+    blur_ksize=5,
+    method="otsu",
+    close_ksize=5,
+    dilate_iter=1,
+    manual_thresh=127,
+):
     """Preprocess an input BGR frame and return (gray, thresh).
 
     method: 'otsu' (default) uses Otsu thresholding; 'adaptive' uses
-    adaptive thresholding; 'canny' runs Canny edge detection followed by
-    dilation to close gaps.
+    adaptive thresholding; 'manual' uses a fixed threshold; 'canny' runs
+    Canny edge detection followed by dilation to close gaps.
     close_ksize: kernel size used for morphological closing/dilation.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -22,6 +30,14 @@ def preprocess_frame(frame, invert=False, blur_ksize=5, method="otsu", close_ksi
         if invert:
             thresh = cv2.bitwise_not(thresh)
         # close small holes
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_ksize, close_ksize))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        return gray, thresh
+
+    if method == "manual":
+        _, thresh = cv2.threshold(gray, manual_thresh, 255, cv2.THRESH_BINARY)
+        if invert:
+            thresh = cv2.bitwise_not(thresh)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_ksize, close_ksize))
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         return gray, thresh
@@ -61,7 +77,11 @@ def compute_hu(contour, use_log=True):
     moments = cv2.moments(contour)
     hu = cv2.HuMoments(moments).flatten()
     if use_log:
-        hu = np.where(hu == 0, 0.0, -np.sign(hu) * np.log10(np.abs(hu)))
+        hu_abs = np.abs(hu)
+        hu_log = np.zeros_like(hu)
+        mask = hu_abs > 0
+        hu_log[mask] = -np.sign(hu[mask]) * np.log10(hu_abs[mask])
+        hu = hu_log
     return hu
 
 

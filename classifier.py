@@ -2,7 +2,9 @@ import argparse
 import cv2
 from joblib import load
 
-from vision_utils import preprocess_frame, find_largest_contour, compute_hu, load_label_map
+from commons import RoiSelector, overlay_frame
+from pipeline import PipelineConfig, analyze_frame
+from vision_utils import load_label_map
 
 
 def main():
@@ -41,157 +43,89 @@ def main():
 
     print("SPACE: save hu | Q or ESC: quit | Click button to select ROI")
 
-    # ROI selection state
-    roi = None  # tuple (x,y,w,h)
-    roi_mode = False  # True when button clicked and waiting for drag
-    drawing = False
-    ix = iy = -1
-
-    # shared button rect, updated each frame so mouse callback can read it
-    button_rect = [0, 0, 0, 0]
-
-    def on_mouse(event, x, y, flags, param):
-        nonlocal roi, roi_mode, drawing, ix, iy
-        bx, by, bw, bh = button_rect
-        # click inside button toggles ROI mode
-        if event == cv2.EVENT_LBUTTONDOWN:
-            if bx <= x <= bx + bw and by <= y <= by + bh:
-                roi_mode = True
-                drawing = False
-                return
-            if roi_mode:
-                drawing = True
-                ix, iy = x, y
-                return
-
-        if event == cv2.EVENT_MOUSEMOVE and drawing:
-            return
-
-        if event == cv2.EVENT_LBUTTONUP and drawing:
-            drawing = False
-            x0, y0 = min(ix, x), min(iy, y)
-            x1, y1 = max(ix, x), max(iy, y)
-            w, h = x1 - x0, y1 - y0
-            if w > 5 and h > 5:
-                roi = (x0, y0, w, h)
-            roi_mode = False
+    roi_selector = RoiSelector()
+    config = PipelineConfig(
+        invert=args.invert,
+        raw_hu=args.raw_hu,
+        edges=args.edges,
+        min_area=args.min_area,
+        morph_size=args.morph_size,
+        dilate_iter=args.dilate_iter,
+    )
 
     cv2.namedWindow("frame")
-    cv2.setMouseCallback("frame", on_mouse)
+    cv2.setMouseCallback("frame", roi_selector.on_mouse)
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        h_frame, w_frame = frame.shape[:2]
-
-        # compute button position (top-right)
-        bw, bh = 140, 28
-        bx, by = max(10, w_frame - bw - 10), 10
-        button_rect[0], button_rect[1], button_rect[2], button_rect[3] = bx, by, bw, bh
-
         display = frame.copy()
+        button_rect = roi_selector.update_button(frame.shape)
+        pred_text = None
+        pred_color = (0, 200, 0)
 
-        # draw button
-        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (50, 50, 50), -1)
-        cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (200, 200, 200), 1)
-        cv2.putText(
-            display,
-            "Select ROI",
-            (bx + 8, by + 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
+        roi = roi_selector.get_clamped_roi(frame.shape)
+        result = analyze_frame(frame, config, roi=roi)
+        contour = result["contour"]
 
-        if roi is not None:
-            x, y, w, h = roi
-            x = max(0, min(x, w_frame - 1))
-            y = max(0, min(y, h_frame - 1))
-            w = max(1, min(w, w_frame - x))
-            h = max(1, min(h, h_frame - y))
-            crop = frame[y : y + h, x : x + w]
-            method = "canny" if args.edges else "otsu"
-            _, thresh_crop = preprocess_frame(
-                crop, invert=args.invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
-            )
-            contour = find_largest_contour(thresh_crop, min_area=args.min_area)
-            # draw ROI on display
+        if result["roi"] is not None:
+            x, y, w, h = result["roi"]
+            crop = result["crop"]
             cv2.rectangle(display, (x, y), (x + w, y + h), (255, 0, 0), 2)
             if contour is not None:
                 cv2.drawContours(crop, [contour], -1, (0, 255, 0), 2)
-                hu = compute_hu(contour, use_log=not args.raw_hu)
-                pred = clf.predict([hu])[0]
-                pred_int = int(pred)
-                label_text = label_map.get(pred_int, str(pred_int))
-                cv2.putText(
-                    display,
-                    f"Pred: {label_text} ({pred_int})",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
             cv2.imshow("crop", crop)
-            cv2.imshow("thresh", thresh_crop)
+            cv2.imshow("thresh", result["thresh"])
         else:
-            method = "canny" if args.edges else "otsu"
-            _, thresh = preprocess_frame(
-                frame, invert=args.invert, method=method, close_ksize=args.morph_size, dilate_iter=args.dilate_iter
-            )
-            contour = find_largest_contour(thresh, min_area=args.min_area)
             if contour is not None:
                 cv2.drawContours(display, [contour], -1, (0, 255, 0), 2)
-                hu = compute_hu(contour, use_log=not args.raw_hu)
-                pred = clf.predict([hu])[0]
-                pred_int = int(pred)
-                label_text = label_map.get(pred_int, str(pred_int))
-                cv2.putText(
-                    display,
-                    f"Pred: {label_text} ({pred_int})",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-            else:
-                cv2.putText(
-                    display,
-                    "No contour",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-            cv2.imshow("frame", display)
-            cv2.imshow("thresh", thresh)
+            cv2.imshow("thresh", result["thresh"])
+
+        if result["hu"] is not None:
+            pred = clf.predict([result["hu"]])[0]
+            pred_int = int(pred)
+            label_text = label_map.get(pred_int, str(pred_int))
+            pred_text = f"Pred: {label_text} ({pred_int})"
+        else:
+            pred_text = "No contour"
+            pred_color = (200, 40, 40)
+
+        status_lines = [
+            "Q/ESC: quit  I: invert  +/-: min area  R: clear ROI",
+            f"Invert: {'ON' if args.invert else 'OFF'}  MinArea: {args.min_area}",
+        ]
+        display = overlay_frame(
+            display,
+            button_rect,
+            status_lines=status_lines,
+            pred_text=pred_text,
+            pred_color=pred_color,
+            button_active=roi_selector.roi_mode,
+        )
+        cv2.imshow("frame", display)
 
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord("q"):
             break
         if key == ord("i"):
             args.invert = not args.invert
+            config.invert = args.invert
             print(f"Invert set to {args.invert}")
             continue
         if key == ord("-") or key == ord("_"):
             args.min_area = max(1, args.min_area - 100)
+            config.min_area = args.min_area
             print(f"min_area={args.min_area}")
             continue
         if key == ord("=") or key == ord("+"):
             args.min_area = args.min_area + 100
+            config.min_area = args.min_area
             print(f"min_area={args.min_area}")
             continue
         if key == ord("r"):
-            roi = None
+            roi_selector.clear()
             print("ROI cleared")
             continue
 

@@ -22,6 +22,16 @@ python trainer.py --data dataset.csv --model model.joblib --test-split 0.2
 ## Classify
 python classifier.py --model model.joblib --labels labels.json
 
+## Unified app
+You can also run the three tools via one entry point:
+- python app.py generate -- --label 1 --output dataset.csv
+- python app.py train -- --data dataset.csv --model model.joblib --test-split 0.2
+- python app.py classify -- --model model.joblib --labels labels.json
+
+## UI app
+For a richer UI (buttons, split preview, sliders), run:
+- python ui_app.py
+
 ## Notes
 - Use --invert if the background is darker than the shapes.
 - Use --raw-hu if you do not want the log transform.
